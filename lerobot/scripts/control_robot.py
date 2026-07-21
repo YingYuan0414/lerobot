@@ -291,6 +291,18 @@ def record(
     if not robot.is_connected:
         robot.connect()
 
+    # Record robot-specific controller settings into meta/info.json for
+    # provenance (e.g. dexbot hand MIT gains / compliance, arm safety limits).
+    # These are not part of the per-frame schema; they describe how the data
+    # was produced. Written AFTER connect() so robots that pull live controller
+    # config from their hardware/streams report the actual values, not defaults.
+    # Only robots that expose `controller_metadata` opt in.
+    if hasattr(robot, "controller_metadata"):
+        from lerobot.common.datasets.utils import INFO_PATH, write_json
+
+        dataset.meta.info["dexbot_controller"] = robot.controller_metadata
+        write_json(dataset.meta.info, dataset.root / INFO_PATH)
+
     listener, events = init_keyboard_listener()
 
     # Execute a few seconds without recording to:

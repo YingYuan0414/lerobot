@@ -29,7 +29,21 @@ import rerun as rr
 import torch
 from deepdiff import DeepDiff
 from termcolor import colored
-import pytorch3d.transforms as transforms
+
+# pytorch3d is only needed for end-effector-pose features (use_eef robots:
+# aloha/droid/franka_leap) and the eef display branch. Import lazily so robots
+# that don't use it (e.g. dexbot_sharpa recorder) can run without pytorch3d
+# installed. `_require_transforms()` raises a clear error if it's actually used.
+transforms = None
+
+
+def _require_transforms():
+    global transforms
+    if transforms is None:
+        import pytorch3d.transforms as _t
+
+        transforms = _t
+    return transforms
 
 from lerobot.common.datasets.image_writer import safe_stop_image_writer
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -38,20 +52,32 @@ from lerobot.common.policies.pretrained import PreTrainedPolicy
 from lerobot.common.robot_devices.robots.utils import Robot
 from lerobot.common.robot_devices.utils import busy_wait
 from lerobot.common.utils.utils import get_safe_torch_device, has_method
-from lerobot.common.utils.aloha_utils import ALOHA_CONFIGURATION, ALOHA_MODEL, VIRTUAL_CAMERA_MAPPING, forward_kinematics, render_and_overlay, setup_renderer
+# aloha_utils pulls heavy, aloha/render-only deps (pytorch3d, mink, mujoco,
+# trimesh). Import lazily so the recorder path (no aloha, no high-level policy
+# rendering) runs without them. `_aloha()` returns the module on demand.
+_aloha_utils = None
+
+
+def _aloha():
+    global _aloha_utils
+    if _aloha_utils is None:
+        from lerobot.common.utils import aloha_utils as _m
+
+        _aloha_utils = _m
+    return _aloha_utils
 
 def add_eef_pose(robot, real_joints):
     if robot.robot_type == "aloha":
-        eef_pose, eef_pose_se3 = forward_kinematics(ALOHA_CONFIGURATION, real_joints)
+        eef_pose, eef_pose_se3 = _aloha().forward_kinematics(_aloha().ALOHA_CONFIGURATION, real_joints)
         eef_pose = torch.cat([eef_pose, real_joints[-1][None]], axis=0).float()
     elif robot.robot_type == "droid":
         eef_rot, eef_pos = robot.robot_interface.last_eef_rot_and_pos
-        rot_6d = transforms.matrix_to_rotation_6d(torch.from_numpy(eef_rot[None])).squeeze()
+        rot_6d = _require_transforms().matrix_to_rotation_6d(torch.from_numpy(eef_rot[None])).squeeze()
         trans = torch.from_numpy(eef_pos.squeeze())
         eef_pose = torch.cat([rot_6d, trans, real_joints[-1:]], axis=0).float()
     elif robot.robot_type == "franka_leap":
         eef_rot, eef_pos = robot.robot_interface.last_eef_rot_and_pos
-        rot_6d = transforms.matrix_to_rotation_6d(torch.from_numpy(eef_rot[None])).squeeze()
+        rot_6d = _require_transforms().matrix_to_rotation_6d(torch.from_numpy(eef_rot[None])).squeeze()
         trans = torch.from_numpy(eef_pos.squeeze())
         # 6 rot + 3 trans + 16 hand joints
         eef_pose = torch.cat([rot_6d, trans, real_joints[7:]], axis=0).float()
@@ -81,7 +107,7 @@ def log_control_info(robot: Robot, dt_s, episode_index=None, frame_index=None, f
     log_dt("dt", dt_s)
 
     # TODO(aliberts): move robot-specific logs logic in robot.print_logs()
-    if robot.robot_type not in ["stretch", "droid", "dummy", "franka_leap"]:
+    if robot.robot_type not in ["stretch", "droid", "dummy", "franka_leap", "dexbot_sharpa"]:
         for name in robot.leader_arms:
             key = f"read_leader_{name}_pos_dt_s"
             if key in robot.logs:
@@ -296,14 +322,14 @@ def get_phantomized_observation(policy, policy_cfg, camera_names, observation):
             cam_name_ = cam_name.split('.')[2] # assuming camera names follow convention of `observation.images.<cam_name>`
             intrinsics_txts.append(f"lerobot/scripts/{policy.calibration_data[cam_name_]['intrinsics']}")
             extrinsics_txts.append(f"lerobot/scripts/{policy.calibration_data[cam_name_]['extrinsics']}")
-            virtual_camera_names.append(VIRTUAL_CAMERA_MAPPING[cam_name_])
+            virtual_camera_names.append(_aloha().VIRTUAL_CAMERA_MAPPING[cam_name_])
 
         # Get image dimensions from first camera
         height, width, _ = observation[camera_names[0]].numpy().shape
 
         # Setup renderer with all cameras at once
-        policy.renderer = setup_renderer(
-            ALOHA_MODEL,
+        policy.renderer = _aloha().setup_renderer(
+            _aloha().ALOHA_MODEL,
             intrinsics_txts,
             extrinsics_txts,
             policy.downsample_factor,
@@ -315,13 +341,13 @@ def get_phantomized_observation(policy, policy_cfg, camera_names, observation):
     state = observation["observation.state"].numpy()
     for cam_name in camera_names:
         # Overlay RGB with rendered robot
-        render = render_and_overlay(
+        render = _aloha().render_and_overlay(
             policy.renderer,
-            ALOHA_MODEL,
+            _aloha().ALOHA_MODEL,
             state,
             observation[cam_name].numpy().copy(),
             policy.downsample_factor,
-            VIRTUAL_CAMERA_MAPPING[cam_name.split('.')[2]],
+            _aloha().VIRTUAL_CAMERA_MAPPING[cam_name.split('.')[2]],
         )
         observation[cam_name] = torch.from_numpy(render)
     return observation
@@ -409,7 +435,7 @@ def control_loop(
 
                 if "action.right_eef_pose" in action:
                     eef_pose = action['action.right_eef_pose']
-                    eef_rot, eef_trans = transforms.rotation_6d_to_matrix(eef_pose[:6]), eef_pose[6:9]
+                    eef_rot, eef_trans = _require_transforms().rotation_6d_to_matrix(eef_pose[:6]), eef_pose[6:9]
                     # Log EEF pose as a 3D coordinate frame
                     origin = eef_trans.numpy()
                     axes = eef_rot.numpy() @ (np.eye(3) * 0.1)

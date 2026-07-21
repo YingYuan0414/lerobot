@@ -666,6 +666,92 @@ class FrankaLeapRobotConfig(RobotConfig):
     mock: bool = False
 
 
+@RobotConfig.register_subclass("dexbot_sharpa")
+@dataclass
+class DexbotSharpaRobotConfig(RobotConfig):
+    """Config for recording a dexbot-teleop Sharpa-hand session over ZMQ.
+
+    This robot is a *pure recorder*: the dexbot-teleop stack (in its own env)
+    keeps running its publishers, and this class only subscribes to them:
+      - ``sensor_<side>``  from sharpa_subscriber.py  (hand joints/torques/tactile)
+      - ``wrist_<side>``   from publish_wrist_wrench.py (wrist F/T + measured arm q)
+      - ``<hand>_<side>``  (arm) from teleop-retargeting (commanded arm_joint_positions)
+      - ``<hand>_<side>``  (hand) from wuji-teleop        (commanded joint_positions)
+
+    In the canonical ``start_teleop.sh`` pipeline the commanded *arm* pose and
+    commanded *hand* pose are published by two different processes on two
+    different ports (arm: teleop-retargeting @ 5557, hand: wuji-teleop @ 5560),
+    so they are configured separately below. For a standalone
+    ``teleop.py --franka-ik`` run that publishes both on one port, set
+    ``teleop_hand_port`` equal to ``teleop_arm_port``.
+
+    No hardware is opened and no commands are sent; ``send_action`` is a no-op.
+    """
+
+    # Which hand/side we are recording.
+    side: str = "right"          # "left" | "right"
+    hand: str = "sharpa"         # teleop topic prefix ("<hand>_<side>")
+
+    # ZMQ endpoints of the already-running dexbot publishers.
+    sensor_host: str = "localhost"
+    sensor_port: int = 5561      # sharpa_subscriber --sensor-pub-port
+    wrist_host: str = "localhost"
+    wrist_port: int = 5563       # publish_wrist_wrench --pub-port
+    # Commanded ARM pose source (teleop-retargeting / teleop.py PUB).
+    teleop_arm_host: str = "localhost"
+    teleop_arm_port: int = 5557
+    # Commanded HAND pose source (wuji-teleop PUB). For a single-process teleop
+    # that publishes both arm and hand on one port, set this to the arm port.
+    teleop_hand_host: str = "localhost"
+    teleop_hand_port: int = 5560
+
+    # Live controller-config streams (optional, for airtight provenance). When
+    # the dexbot subscribers are run with their config publishers enabled, the
+    # recorder subscribes and OVERRIDES the manually-passed metadata below with
+    # the actual live values. Hand config rides the sensor port (topic
+    # hand_config_<side>); arm config needs its own port (arm_config_<side>).
+    # 0 disables (fall back to the manually-passed values only).
+    hand_config_from_stream: bool = True   # listen on sensor_port for hand_config
+    arm_config_port: int = 0               # tianji-subscriber --config-pub-port
+    arm_config_host: str = "localhost"
+
+    # Seconds to wait for the first frame on each subscribed stream at connect.
+    connect_timeout_s: float = 10.0
+
+    # ── Controller-setting metadata ───────────────────────────────────────
+    # These knobs live in the dexbot subscriber processes (sharpa-subscriber /
+    # tianji-subscriber) and are NOT observable over ZMQ, so pass here whatever
+    # you launched those processes with. They are written verbatim into the
+    # dataset's meta/info.json under "dexbot_controller" for provenance. Leave
+    # a field None if it does not apply (e.g. MIT gains in position mode).
+    hand_control_mode: str = "position"          # "position" | "mit"
+    hand_mit_kp_scale: float | None = None       # sharpa-subscriber --mit-kp-scale
+    hand_mit_kd_scale: float | None = None       # --mit-kd-scale
+    hand_filter_alpha: float | None = None       # --filter-alpha (mit mode)
+    hand_speed_coeff: float | None = None        # --speed-coeff
+    hand_current_coeff: float | None = None       # --current-coeff
+    hand_compliance: bool = False                # --compliance
+    hand_kz: float | None = None                 # --kz  (compliance vertical stiffness N/m)
+    hand_dz: float | None = None                 # --dz  (compliance vertical damping N*s/m)
+    hand_kf: float | None = None                 # --kf  (position-mode force->dq gain)
+    hand_contact_threshold: float | None = None  # --contact-threshold (N*m)
+    hand_orientation: str | None = None          # --hand-orientation
+    arm_type: str | None = None                  # "tianji" | "franka"
+    arm_max_delta_deg: float | None = None       # tianji-subscriber --max-delta-deg
+    arm_max_lag_deg: float | None = None         # --max-lag-deg
+    teleop_pub_hz: float | None = None           # teleop-retargeting --pub-hz
+    # Free-form catch-all for anything not covered above (merged into the
+    # metadata block). E.g. --robot.controller_extra='{"note":"soft grasp"}'.
+    controller_extra: dict = field(default_factory=lambda: {})
+
+    # Recorder has no cameras by default (dexbot teleop loop has none). Add
+    # OpenCV/RealSense camera configs here to fold vision into the dataset.
+    cameras: dict[str, CameraConfig] = field(default_factory=lambda: {})
+
+    use_eef: bool = False
+    mock: bool = False
+
+
 @RobotConfig.register_subclass("dummy")
 @dataclass
 class DummyRobotConfig(RobotConfig):
