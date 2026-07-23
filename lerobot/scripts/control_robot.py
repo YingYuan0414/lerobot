@@ -341,6 +341,11 @@ def record(
             (recorded_episodes < cfg.num_episodes - 1) or events["rerecord_episode"]
         ):
             log_say("Reset the environment", cfg.play_sounds)
+            # Coordinated hardware reset (dexbot): home the arm + re-tare the
+            # wrist F/T + re-anchor teleop, all from this one signal, so the next
+            # episode starts clean without the 3-pane manual dance.
+            if has_method(robot, "send_reset"):
+                robot.send_reset()
             reset_environment(robot, events, cfg.reset_time_s, cfg.fps)
 
         if events["rerecord_episode"]:
@@ -356,7 +361,14 @@ def record(
         if events["stop_recording"]:
             break
 
-        input("Press Enter to continue...")
+        # The coordinated reset already blocks on the operator's ENTER (in the
+        # teleop pane, to reposition the tracker), so this extra gate would be a
+        # redundant second ENTER. Skip it when the blocking handshake is active.
+        _blocking_reset = getattr(
+            getattr(robot, "config", None), "reset_complete_port", 0
+        )
+        if not _blocking_reset:
+            input("Press Enter to continue...")
 
     log_say("Stop recording", cfg.play_sounds, blocking=True)
     stop_recording(robot, listener, cfg.display_data)

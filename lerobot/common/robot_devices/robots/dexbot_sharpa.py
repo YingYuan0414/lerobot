@@ -161,6 +161,9 @@ class DexbotSharpaRobot:
         # Optional live controller-config streams.
         self._hand_cfg = None
         self._arm_cfg = None
+        # Optional coordinated-reset sockets (created on connect()).
+        self._reset_pub = None            # PUB reset_arm -> tianji-subscriber
+        self._reset_complete_sub = None   # SUB reset_complete <- teleop-retargeting
 
         # Carried-forward last-good command vectors (teleop may briefly drop a
         # field, or arm IK may be inactive at the very start of an episode).
@@ -356,10 +359,85 @@ class DexbotSharpaRobot:
                 else:
                     print(f"[DexbotSharpaRobot] no live {label} stream; using passed values")
 
+        # Coordinated-reset PUB: bind so tianji-subscriber (--reset-sub-port) can
+        # SUB and home + re-tare the arm between episodes.
+        if c.reset_pub_port > 0:
+            import zmq
+            ctx = zmq.Context.instance()
+            self._reset_pub = ctx.socket(zmq.PUB)
+            self._reset_pub.setsockopt(zmq.SNDHWM, 2)
+            self._reset_pub.bind(f"tcp://*:{c.reset_pub_port}")
+            print(f"[DexbotSharpaRobot] reset PUB bound on tcp://*:{c.reset_pub_port} "
+                  f"(topic: reset_arm)")
+            # Connect the completion SUB now (before any reset is sent) so we
+            # never miss the 'reset_complete' reply due to slow-joiner drops.
+            if c.reset_complete_port > 0:
+                self._reset_complete_sub = ctx.socket(zmq.SUB)
+                self._reset_complete_sub.setsockopt(zmq.RCVHWM, 4)
+                self._reset_complete_sub.setsockopt_string(zmq.SUBSCRIBE, "reset_complete")
+                self._reset_complete_sub.connect(
+                    f"tcp://{c.reset_complete_host}:{c.reset_complete_port}"
+                )
+                print(f"[DexbotSharpaRobot] reset-complete SUB on "
+                      f"tcp://{c.reset_complete_host}:{c.reset_complete_port}")
+
         for cam in self.cameras.values():
             cam.connect()
 
         self.is_connected = True
+
+    def send_reset(self) -> None:
+        """Publish 'reset_arm' so tianji-subscriber homes + re-tares the arm and
+        teleop re-anchors. No-op if reset_pub_port was not configured.
+
+        If a reset-complete SUB is configured, this BLOCKS until teleop reports
+        the full handshake is done (arm homed + re-tared, tracker repositioned,
+        Vive→arm re-anchored), so the next episode never starts mid-reset. The
+        wait is bounded by ``reset_timeout_s``; on timeout it warns and returns.
+
+        Called by the recorder between episodes (the environment-reset phase).
+        """
+        if self._reset_pub is None:
+            return
+        import zmq
+        c = self.config
+        try:
+            # Drop any stale completion from a previous reset so we only ever
+            # wait on the reply to THIS request.
+            if self._reset_complete_sub is not None:
+                while True:
+                    try:
+                        self._reset_complete_sub.recv_string(zmq.NOBLOCK)
+                        self._reset_complete_sub.recv_string(zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+            self._reset_pub.send_string("reset_arm", zmq.SNDMORE | zmq.NOBLOCK)
+            self._reset_pub.send_string(
+                json.dumps({"side": self.side, "cmd": "reset"}), zmq.NOBLOCK
+            )
+            print("[DexbotSharpaRobot] sent reset_arm (home + re-tare + re-anchor).")
+        except Exception as e:
+            print(f"[DexbotSharpaRobot] send_reset failed: {e}")
+            return
+
+        if self._reset_complete_sub is None:
+            return
+        # Block until teleop signals completion (operator repositioned tracker
+        # and teleop re-anchored), or timeout.
+        print(f"[DexbotSharpaRobot] waiting for reset_complete "
+              f"(timeout {c.reset_timeout_s:.0f}s)...")
+        deadline = time.time() + c.reset_timeout_s
+        while time.time() < deadline:
+            try:
+                if self._reset_complete_sub.poll(timeout=200):  # ms
+                    self._reset_complete_sub.recv_string()      # topic
+                    self._reset_complete_sub.recv_string()      # payload
+                    print("[DexbotSharpaRobot] reset_complete received — resuming.")
+                    return
+            except Exception:
+                break
+        print("[DexbotSharpaRobot] WARNING: reset_complete not received before "
+              "timeout; continuing anyway (arm may not be re-anchored).")
 
     def run_calibration(self):
         # Recorder-only: nothing to calibrate. The dexbot stack owns calibration.
@@ -463,6 +541,14 @@ class DexbotSharpaRobot:
             src.close()
         self._sensor = self._wrist = self._teleop_arm = self._teleop_hand = None
         self._hand_cfg = self._arm_cfg = None
+        for _sock_attr in ("_reset_pub", "_reset_complete_sub"):
+            _sock = getattr(self, _sock_attr, None)
+            if _sock is not None:
+                try:
+                    _sock.close(linger=0)
+                except Exception:
+                    pass
+                setattr(self, _sock_attr, None)
         for cam in self.cameras.values():
             cam.disconnect()
         self.is_connected = False

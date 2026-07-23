@@ -715,6 +715,19 @@ class DexbotSharpaRobotConfig(RobotConfig):
     arm_config_port: int = 0               # tianji-subscriber --config-pub-port
     arm_config_host: str = "localhost"
 
+    # Coordinated-reset PUB: between episodes the recorder publishes "reset_arm"
+    # so tianji-subscriber homes + re-tares the arm and teleop re-anchors. 0
+    # disables (the subscriber's manual ENTER reset still works).
+    reset_pub_port: int = 0                # tianji-subscriber --reset-sub-port
+    # SUB port for 'reset_complete' from teleop-retargeting. When set, send_reset()
+    # BLOCKS until the whole handshake finishes (arm homed + re-tared, tracker
+    # repositioned, Vive→arm re-anchored), so the next episode never starts
+    # mid-reset. 0 = fire-and-forget (rely on reset_time_s). See
+    # teleop-retargeting --reset-complete-port.
+    reset_complete_port: int = 0
+    reset_complete_host: str = "localhost"
+    reset_timeout_s: float = 60.0          # max wait for reset_complete
+
     # Seconds to wait for the first frame on each subscribed stream at connect.
     connect_timeout_s: float = 10.0
 
