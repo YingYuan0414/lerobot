@@ -340,3 +340,53 @@ class ZedCameraConfig(CameraConfig):
             }
 
         return feature_specs
+
+
+@CameraConfig.register_subclass("uvc_zed")
+@dataclass
+class UvcZedCameraConfig(CameraConfig):
+    """ZED stereo camera read as a plain UVC device via OpenCV (no ZED SDK).
+
+    The ZED exposes a single side-by-side stereo frame over UVC (e.g. 2560x720
+    for HD720-per-eye). We open it with ``cv2.VideoCapture`` and keep one eye
+    only. ``width``/``height`` describe the PER-EYE frame that is recorded
+    (i.e. the cropped output), NOT the raw side-by-side capture.
+
+    Example:
+    ```python
+    UvcZedCameraConfig(device="/dev/video1", fps=30, width=1280, height=720)
+    ```
+    """
+
+    device: str = "/dev/video1"  # /dev/videoN or an integer index as a string
+    fps: int | None = 30
+    width: int | None = 1280
+    height: int | None = 720
+    color_mode: str = "rgb"
+    channels: int | None = None
+    eye: str = "right"  # which half of the side-by-side stereo frame to keep
+    rotation: int | None = None
+    mock: bool = False
+
+    def __post_init__(self):
+        if self.color_mode not in ["rgb", "bgr"]:
+            raise ValueError(
+                f"`color_mode` is expected to be 'rgb' or 'bgr', but {self.color_mode} is provided."
+            )
+        if self.eye not in ["left", "right"]:
+            raise ValueError(f"`eye` must be 'left' or 'right', but {self.eye} is provided.")
+
+        self.channels = 3
+
+        if self.rotation not in [-90, None, 90, 180]:
+            raise ValueError(f"`rotation` must be in [-90, None, 90, 180] (got {self.rotation})")
+
+    def get_feature_specs(self, cam_key: str) -> dict[str, dict]:
+        base = f"observation.images.{cam_key}"
+        return {
+            base: {
+                "shape": (self.height, self.width, self.channels),
+                "names": ["height", "width", "channels"],
+                "info": f"{self.color_mode.upper()} color image (ZED {self.eye} eye, UVC)",
+            }
+        }
