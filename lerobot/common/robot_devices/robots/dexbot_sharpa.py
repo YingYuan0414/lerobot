@@ -259,6 +259,12 @@ class DexbotSharpaRobot:
                 "type": c.arm_type,
                 "max_delta_deg": c.arm_max_delta_deg,
                 "max_lag_deg": c.arm_max_lag_deg,
+                "admittance": c.arm_admittance,
+                "admittance_gain": c.arm_admittance_gain,
+                "admittance_deadband_n": c.arm_admittance_deadband_n,
+                "admittance_max_offset_m": c.arm_admittance_max_offset_m,
+                "admittance_leak_tau_s": c.arm_admittance_leak_tau_s,
+                "admittance_sign": c.arm_admittance_sign,
             },
             "teleop_pub_hz": c.teleop_pub_hz,
         }

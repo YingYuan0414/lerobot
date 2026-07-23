@@ -740,6 +740,15 @@ class DexbotSharpaRobotConfig(RobotConfig):
     arm_max_delta_deg: float | None = None       # tianji-subscriber --max-delta-deg
     arm_max_lag_deg: float | None = None         # --max-lag-deg
     teleop_pub_hz: float | None = None           # teleop-retargeting --pub-hz
+    # Arm wrench-admittance metadata (teleop-retargeting --admittance; the arm
+    # yields the EE target under contact force). Not observable over ZMQ, so
+    # pass whatever teleop-retargeting was launched with.
+    arm_admittance: bool = False                 # --admittance
+    arm_admittance_gain: float | None = None     # --admittance-gain (m/s per N)
+    arm_admittance_deadband_n: float | None = None  # --admittance-deadband-n (N)
+    arm_admittance_max_offset_m: float | None = None  # --admittance-max-offset-m (m)
+    arm_admittance_leak_tau_s: float | None = None  # --admittance-leak-tau-s (s)
+    arm_admittance_sign: float | None = None     # --admittance-sign
     # Free-form catch-all for anything not covered above (merged into the
     # metadata block). E.g. --robot.controller_extra='{"note":"soft grasp"}'.
     controller_extra: dict = field(default_factory=lambda: {})
