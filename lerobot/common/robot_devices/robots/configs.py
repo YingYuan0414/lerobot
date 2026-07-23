@@ -736,6 +736,15 @@ class DexbotSharpaRobotConfig(RobotConfig):
     hand_kf: float | None = None                 # --kf  (position-mode force->dq gain)
     hand_contact_threshold: float | None = None  # --contact-threshold (N*m)
     hand_orientation: str | None = None          # --hand-orientation
+    # Force-cap (admittance) finger mode — separate from hand_compliance.
+    hand_force_cap_mode: bool = False            # --force-cap-mode
+    hand_force_cap: float | None = None          # --force-cap (N)
+    hand_force_cap_ki: float | None = None       # --force-cap-ki (rad per N*s)
+    hand_force_cap_release_frac: float | None = None  # --force-cap-release-frac
+    hand_force_cap_open_rate: float | None = None    # --force-cap-open-rate (rad/s)
+    hand_force_cap_close_rate: float | None = None   # --force-cap-close-rate (rad/s)
+    hand_force_cap_limit_margin: float | None = None  # --force-cap-limit-margin (rad)
+    hand_force_cap_exclude: str | None = None    # --force-cap-exclude (stiff fingers)
     arm_type: str | None = None                  # "tianji" | "franka"
     arm_max_delta_deg: float | None = None       # tianji-subscriber --max-delta-deg
     arm_max_lag_deg: float | None = None         # --max-lag-deg
