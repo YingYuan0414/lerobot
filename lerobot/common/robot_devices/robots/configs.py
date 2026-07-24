@@ -752,7 +752,8 @@ class DexbotSharpaRobotConfig(RobotConfig):
     # Force-cap (admittance) finger mode — separate from hand_compliance.
     hand_force_cap_mode: bool = False            # --force-cap-mode
     hand_force_cap: float | None = None          # --force-cap (N)
-    hand_force_cap_ki: float | None = None       # --force-cap-ki (rad per N*s)
+    hand_force_cap_ki: float | None = None       # --force-cap-ki (compliance, rad per N)
+    hand_force_cap_retreat_lag: float | None = None  # --force-cap-retreat-lag (first-order lag gamma)
     hand_force_cap_release_frac: float | None = None  # --force-cap-release-frac
     hand_force_cap_open_rate: float | None = None    # --force-cap-open-rate (rad/s)
     hand_force_cap_close_rate: float | None = None   # --force-cap-close-rate (rad/s)

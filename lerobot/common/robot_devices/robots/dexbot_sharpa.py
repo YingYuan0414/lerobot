@@ -260,6 +260,7 @@ class DexbotSharpaRobot:
                 "force_cap_mode": c.hand_force_cap_mode,
                 "force_cap": c.hand_force_cap,
                 "force_cap_ki": c.hand_force_cap_ki,
+                "force_cap_retreat_lag": c.hand_force_cap_retreat_lag,
                 "force_cap_release_frac": c.hand_force_cap_release_frac,
                 "force_cap_open_rate": c.hand_force_cap_open_rate,
                 "force_cap_close_rate": c.hand_force_cap_close_rate,
