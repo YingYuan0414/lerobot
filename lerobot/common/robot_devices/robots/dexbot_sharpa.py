@@ -266,6 +266,7 @@ class DexbotSharpaRobot:
                 "force_cap_close_rate": c.hand_force_cap_close_rate,
                 "force_cap_limit_margin": c.hand_force_cap_limit_margin,
                 "force_cap_exclude": c.hand_force_cap_exclude,
+                "force_cap_source": c.hand_force_cap_source,
             },
             "arm_controller": {
                 "type": c.arm_type,
