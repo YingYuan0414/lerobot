@@ -20,7 +20,30 @@ Recorded features (all raw, no derived object wrench):
     observation.hand_torque    (22,)  hand joint torques
     observation.tactile        (30,)  fingertip f6 (5 fingers x 6) flattened
     observation.wrist_wrench    (6,)  [Fx,Fy,Fz,Mx,My,Mz]
-    action                     (29,)  commanded arm_q_cmd(7) + hand qpos(22)
+    action                     (29,)  teleop arm_q_cmd(7) + hand qpos(22)
+    action.teleop              (29,)  alias of `action` (explicit raw teleop)
+    action.applied             (29,)  what the controllers actually commanded
+    action.compliance_dq       (22,)  per-joint hand compliance correction
+
+Where compliance enters the two chains (this is why the extra keys exist):
+
+    HAND:  wuji-teleop PUB :5560 --> sharpa_subscriber
+             raw glove qpos                q_corrected = qpos + dq --> hardware
+           The recorder SUBs :5560, i.e. UPSTREAM of compliance, so plain
+           `action` is the RAW glove target. `q_corrected` is never published,
+           but the correction `dq` is (sensor stream, "dq_compliance"), so the
+           applied command is reconstructed here as qpos + dq.
+
+    ARM:   teleop.py: T_target -> rate limit -> blend -> _apply_admittance -> IK
+           `arm_joint_positions` is solved AFTER the admittance offset, so for
+           the arm the published value is already the APPLIED command. The raw
+           (un-yielded) tracker target is not published as joint angles, so
+           action.teleop and action.applied share the same arm block; the arm's
+           yielding is evidenced by observation.wrist_wrench + the EE offset.
+
+So for a contact experiment the hand block of `action.teleop` vs
+`action.applied` (and `action.compliance_dq` directly) shows the controller
+backing off exactly when tactile/torque rises.
 
 Because every source is a separate async publisher, this is a "latest-value
 join at fps": each tick grabs whatever each SUB socket last received. The loop
@@ -215,6 +238,30 @@ class DexbotSharpaRobot:
                 "dtype": "float32",
                 "shape": (WRENCH_DIM,),
                 "names": list(self.wrench_names),
+            },
+            # Raw teleop target (glove + tracker IK), i.e. what the operator
+            # asked for. Same values as `action`; recorded under an explicit
+            # name so a consumer never has to know which side of the
+            # compliance controller `action` was tapped from.
+            "action.teleop": {
+                "dtype": "float32",
+                "shape": (len(self.state_names),),
+                "names": list(self.state_names),
+            },
+            # What the controllers actually commanded: hand block includes the
+            # compliance correction, arm block is the post-admittance IK
+            # solution. Equals action.teleop when compliance is off.
+            "action.applied": {
+                "dtype": "float32",
+                "shape": (len(self.state_names),),
+                "names": list(self.state_names),
+            },
+            # The hand compliance correction itself (rad, per joint). Zeros when
+            # no compliance/force-cap controller is active.
+            "action.compliance_dq": {
+                "dtype": "float32",
+                "shape": (NUM_HAND_JOINTS,),
+                "names": list(SHARPA_JOINT_NAMES),
             },
         }
 
@@ -488,7 +535,14 @@ class DexbotSharpaRobot:
         return obs
 
     def _read_action(self) -> dict:
-        """Commanded arm pose (arm publisher) + hand pose (hand publisher)."""
+        """Teleop target + what the controllers actually commanded.
+
+        `action` / `action.teleop` are the RAW operator intent, because both
+        command publishers sit upstream of the hand compliance controller. The
+        applied hand command is rebuilt as ``qpos + dq_compliance`` using the
+        correction the subscriber reports on the sensor stream, which is exactly
+        the ``q_corrected`` it wrote to the hardware that tick.
+        """
         arm_cmd = self._last_arm_q_cmd
         hand_cmd = self._last_hand_qpos
 
@@ -506,8 +560,28 @@ class DexbotSharpaRobot:
                 hand_cmd = np.asarray(h, dtype=np.float32)[:NUM_HAND_JOINTS]
                 self._last_hand_qpos = hand_cmd
 
-        action = np.concatenate([arm_cmd, hand_cmd]).astype(np.float32)
-        return {"action": torch.from_numpy(action)}
+        # Hand compliance correction (rad). Absent/short vectors -> zeros, so a
+        # run without --compliance records action.applied == action.teleop.
+        dq = np.zeros(NUM_HAND_JOINTS, dtype=np.float32)
+        s = self._sensor.latest
+        if s is not None:
+            raw_dq = s.get("dq_compliance")
+            if raw_dq is not None:
+                v = np.asarray(raw_dq, dtype=np.float32).reshape(-1)
+                if v.size >= NUM_HAND_JOINTS:
+                    dq = v[:NUM_HAND_JOINTS]
+
+        teleop = np.concatenate([arm_cmd, hand_cmd]).astype(np.float32)
+        # Arm block: `arm_joint_positions` is already solved from the
+        # post-admittance EE target, so applied == teleop for the arm.
+        applied = np.concatenate([arm_cmd, hand_cmd + dq]).astype(np.float32)
+
+        return {
+            "action": torch.from_numpy(teleop),
+            "action.teleop": torch.from_numpy(teleop.copy()),
+            "action.applied": torch.from_numpy(applied),
+            "action.compliance_dq": torch.from_numpy(dq.copy()),
+        }
 
     def teleop_step(self, record_data=False):
         if not self.is_connected:

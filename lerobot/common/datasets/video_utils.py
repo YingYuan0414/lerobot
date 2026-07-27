@@ -16,7 +16,10 @@
 import glob
 import importlib
 import logging
+import os
 import warnings
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -380,26 +383,43 @@ def encode_video_frames(
         # "While less efficient, it is generally preferable to modify logging with Python’s logging"
         logging.getLogger("libav").setLevel(log_level)
 
+    # Decoding the PNGs is the bottleneck here, not the codec: at 1280x720 a
+    # serial `Image.open(...).convert("RGB")` costs ~25 ms/frame against ~16 ms
+    # for the h264 encode. PIL releases the GIL while decompressing, so reading
+    # ahead on a small thread pool cuts that to ~6 ms and lets the encoder run
+    # near its own limit. The window is bounded so memory stays flat on long
+    # episodes (a 720p RGB frame is ~2.7 MB).
+    def _decode(path: str) -> av.VideoFrame:
+        if pix_fmt in ["gray16le", "gray16be"]:
+            input_image = Image.open(path)
+            if input_image.mode == "I;16":
+                img_array = np.array(input_image)
+            else:
+                img_array = np.array(input_image.convert("I"), dtype=np.uint16)
+            return av.VideoFrame.from_ndarray(img_array, format=pix_fmt)
+        return av.VideoFrame.from_image(Image.open(path).convert("RGB"))
+
+    num_readers = min(8, max(1, (os.cpu_count() or 4) // 2))
+    read_ahead = 2 * num_readers
+
     # Create and open output file (overwrite by default)
-    with av.open(str(video_path), "w") as output:
+    with av.open(str(video_path), "w") as output, ThreadPoolExecutor(num_readers) as reader:
         output_stream = output.add_stream(vcodec, fps, options=video_options)
         output_stream.pix_fmt = pix_fmt
         output_stream.width = width
         output_stream.height = height
 
-        # Loop through input frames and encode them
-        for input_data in input_list:
-            if pix_fmt in ["gray16le", "gray16be"]:
-                input_image = Image.open(input_data)
-                if input_image.mode == 'I;16':
-                    img_array = np.array(input_image)
-                else:
-                    img_array = np.array(input_image.convert('I'), dtype=np.uint16)
-                input_frame = av.VideoFrame.from_ndarray(img_array, format=pix_fmt)
-            else:
-                input_image = Image.open(input_data).convert("RGB")
-                input_frame = av.VideoFrame.from_image(input_image)
+        # Loop through input frames and encode them, keeping `read_ahead` decodes
+        # in flight. Results are consumed FIFO, so frame order is preserved.
+        pending = deque(reader.submit(_decode, p) for p in input_list[:read_ahead])
+        for next_path in input_list[read_ahead:]:
+            input_frame = pending.popleft().result()
+            pending.append(reader.submit(_decode, next_path))
             packet = output_stream.encode(input_frame)
+            if packet:
+                output.mux(packet)
+        while pending:
+            packet = output_stream.encode(pending.popleft().result())
             if packet:
                 output.mux(packet)
 

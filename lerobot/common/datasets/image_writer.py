@@ -82,6 +82,16 @@ def image_array_to_pil_image(image_array: np.ndarray, range_check: bool = True) 
         raise ValueError(f"Unsupported image shape: {image_array.shape}")
 
 
+# These PNGs are a short-lived intermediate: they are written during recording,
+# read back once for stats + once for video encoding, then deleted by
+# `save_episode`. Nothing ships them, so zlib effort is wasted work on the
+# recording hot path. At 1280x720 the default level 6 costs ~285 ms/frame vs
+# ~83 ms at level 1 (only ~12% larger on disk), which is the difference between
+# the writer keeping up with a 30 fps camera and building a backlog that stalls
+# the post-episode reset.
+PNG_COMPRESS_LEVEL = 1
+
+
 def write_image(image: np.ndarray | PIL.Image.Image, fpath: Path):
     try:
         if isinstance(image, np.ndarray):
@@ -90,7 +100,8 @@ def write_image(image: np.ndarray | PIL.Image.Image, fpath: Path):
             img = image
         else:
             raise TypeError(f"Unsupported image type: {type(image)}")
-        img.save(fpath)
+        save_kwargs = {"compress_level": PNG_COMPRESS_LEVEL} if str(fpath).endswith(".png") else {}
+        img.save(fpath, **save_kwargs)
     except Exception as e:
         print(f"Error writing image {fpath}: {e}")
 
