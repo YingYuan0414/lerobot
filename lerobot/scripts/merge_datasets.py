@@ -45,17 +45,20 @@ def merge_datasets(dataset_repo_ids: list[str], target_repo_id: str):
                 }
                 frame_data["task"] = source_meta.tasks[frame["task_index"].item()]
 
-                # Apply transformations to all camera fields
+                # Apply transformations to all camera fields. Dataset __getitem__
+                # returns images as float CHW in [0, 1]; add_frame expects HWC ints.
                 for key in list(frame_data.keys()):
-                    if key.startswith("observation.images.") and ".color" in key:
+                    if not key.startswith("observation.images."):
+                        continue
+                    img = frame_data[key]
+                    if img.ndim == 3 and img.shape[0] in (1, 3, 4):
+                        img = img.permute(1, 2, 0)
+                    if "depth" in key:
+                        # Depth images: convert to uint16 millimeters
+                        frame_data[key] = (img * 1000).to(torch.uint16)
+                    else:
                         # RGB images: convert to uint8
-                        frame_data[key] = (frame_data[key].permute(1,2,0) * 255).to(torch.uint8)
-                    elif key.startswith("observation.images.") and ".transformed_depth" in key:
-                        # Depth images: convert to uint16
-                        frame_data[key] = (frame_data[key].permute(1,2,0) * 1000).to(torch.uint16)
-                    elif key.startswith("observation.images.") and ".goal_gripper_proj" in key:
-                        # Goal gripper projection: convert to uint8
-                        frame_data[key] = (frame_data[key].permute(1,2,0) * 255).to(torch.uint8)
+                        frame_data[key] = (img * 255).to(torch.uint8)
 
                 if "next_event_idx" in frame_data:
                     frame_data["next_event_idx"] = frame_data["next_event_idx"].int().unsqueeze(0)

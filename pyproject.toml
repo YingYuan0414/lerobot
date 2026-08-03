@@ -50,7 +50,10 @@ classifiers = [
 ]
 dependencies = [
     "cmake>=3.29.0.1",
-    "datasets>=2.19.0",
+    # datasets 4.x changed column access to return a lazy Column instead of a
+    # list of tensors, which breaks torch.stack(hf_dataset[...]) in
+    # lerobot_dataset.py. Stay on 3.x until those call sites are ported.
+    "datasets>=2.19.0,<4",
     "deepdiff>=7.0.1",
     "diffusers>=0.27.2",
     "draccus==0.10.0",
@@ -71,9 +74,12 @@ dependencies = [
     "pyzmq>=26.2.1",
     "rerun-sdk>=0.21.0,<0.24.0",
     "termcolor>=2.4.0",
-    "torch>=2.2.1,<2.7",
-    "torchcodec==0.2.1; sys_platform != 'win32' and (sys_platform != 'linux' or (platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'armv7l')) and (sys_platform != 'darwin' or platform_machine != 'x86_64')",
-    "torchvision>=0.21.0",
+    # torch >=2.7 + CUDA 12.8 is the floor for Blackwell (sm_120); cu124 wheels
+    # only ship kernels up to sm_90. torchcodec 0.3.x is the release paired with
+    # torch 2.7.
+    "torch>=2.7,<2.8",
+    "torchcodec==0.3.0; sys_platform != 'win32' and (sys_platform != 'linux' or (platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'armv7l')) and (sys_platform != 'darwin' or platform_machine != 'x86_64')",
+    "torchvision>=0.22.0",
     "wandb>=0.16.3",
     "zarr>=2.17.0",
     "mink>=0.0.11,<0.0.12",
@@ -163,14 +169,14 @@ platforms = ["linux-64"]
 
 [tool.pixi.system-requirements]
 libc = { family = "glibc", version = "2.31" } # Need this for rerun
-cuda = "12.4"
+cuda = "12.8"                                # 12.8+ required for Blackwell (sm_120)
 
 [tool.pixi.dependencies]
 python = "<=3.11"    # Pyrealsense needs this, wheels aren't released for Python 3.12
 pip = ">=25.1.1,<26"
 gcc = "11.*"
 gxx = "11.*"
-cuda-toolkit = "12.4.*"
+cuda-toolkit = "12.8.*"
 ffmpeg = ">=7,<8"
 pkg-config = "*"
 cython = ">=3"
@@ -180,6 +186,12 @@ env = { PKG_CONFIG_PATH = "$CONDA_PREFIX/lib/pkgconfig:$CONDA_PREFIX/share/pkgco
 
 [tool.pixi.pypi-options]
 no-build-isolation = ["av"]
+# Default PyPI serves cu124 torch wheels, which lack sm_120 kernels. Pull the
+# torch stack from PyTorch's CUDA 12.8 index instead. That index also mirrors
+# unrelated packages (e.g. an ancient cmake), so allow the best version across
+# both indexes rather than letting the first index win.
+extra-index-urls = ["https://download.pytorch.org/whl/cu128"]
+index-strategy = "unsafe-best-match"
 
 [tool.pixi.pypi-dependencies]
 lerobot = { path = ".", editable = true }

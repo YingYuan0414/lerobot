@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import functools
 import glob
 import importlib
 import logging
@@ -41,6 +42,39 @@ def get_safe_default_codec():
             "'torchcodec' is not available in your platform, falling back to 'pyav' as a default decoder"
         )
         return "pyav"
+
+
+# Constructing a VideoDecoder parses the container and builds the frame index,
+# which measured ~3.9 ms — about a quarter of the per-sample decode cost when
+# done for every __getitem__. Cache them so repeated reads of an episode reuse
+# one decoder.
+#
+# A decoder holds ffmpeg state and an open file descriptor, so it must NOT be
+# shared across processes: a DataLoader worker forked from a parent with a warm
+# cache would inherit the parent's decoders and the siblings would corrupt each
+# other's stream position ("Could not push packet to decoder"). Keying on the
+# pid makes a forked child miss the cache and build its own decoders.
+_DECODER_CACHE_SIZE = 32
+
+
+@functools.lru_cache(maxsize=_DECODER_CACHE_SIZE)
+def _get_cached_video_decoder_for_pid(
+    pid: int, video_path: str, device: str, seek_mode: str, num_ffmpeg_threads: int
+):
+    from torchcodec.decoders import VideoDecoder
+
+    return VideoDecoder(
+        video_path,
+        device=device,
+        seek_mode=seek_mode,
+        num_ffmpeg_threads=num_ffmpeg_threads,
+    )
+
+
+def _get_cached_video_decoder(video_path: str, device: str, seek_mode: str, num_ffmpeg_threads: int):
+    return _get_cached_video_decoder_for_pid(
+        os.getpid(), video_path, device, seek_mode, num_ffmpeg_threads
+    )
 
 
 def decode_video_frames(
@@ -266,13 +300,13 @@ def decode_video_frames_torchcodec(
     can be adjusted during encoding to take into account decoding time and video size in bytes.
     """
 
-    if importlib.util.find_spec("torchcodec"):
-        from torchcodec.decoders import VideoDecoder
-    else:
+    if not importlib.util.find_spec("torchcodec"):
         raise ImportError("torchcodec is required but not available.")
 
-    # initialize video decoder
-    decoder = VideoDecoder(video_path, device=device, seek_mode="approximate")
+    # Reuse the decoder for this video instead of rebuilding it per sample. One
+    # ffmpeg thread per decoder is fastest here: DataLoader already gives us
+    # process-level parallelism, so internal threads only add contention.
+    decoder = _get_cached_video_decoder(str(video_path), device, "approximate", 1)
     loaded_frames = []
     loaded_ts = []
     # get metadata for frame information
