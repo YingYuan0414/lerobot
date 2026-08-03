@@ -1,7 +1,22 @@
 from abc import ABC, abstractmethod
 from typing import Dict
 import torch
-import pytorch3d.transforms as transforms
+
+
+class _LazyPytorch3dTransforms:
+    """Defer `pytorch3d.transforms` until an EEF rotation helper actually runs.
+
+    Only the Aloha/Droid 6D-rotation paths need pytorch3d; joint-space adapters
+    (e.g. dexbot_sharpa) must stay importable in envs without it installed.
+    """
+
+    def __getattr__(self, name):
+        import pytorch3d.transforms as _transforms
+
+        return getattr(_transforms, name)
+
+
+transforms = _LazyPytorch3dTransforms()
 
 class RobotAdapter(ABC):
     """Abstract interface for robot-specific logic"""
@@ -304,3 +319,29 @@ class LiberoFrankaAdapter(RobotAdapter):
 
     def compute_relative_actions(self, batch: dict) -> dict:
         return batch  # No-op: return unchanged
+
+
+class DexbotSharpaAdapter(RobotAdapter):
+    """Sharpa hand + TJ-Marvin arm, absolute 29-D joint targets.
+
+    The recorded `action` (arm_q(7) rad + hand qpos(22) rad) is already the
+    joint target the downstream arm/hand subscribers consume, so this adapter is
+    a pass-through. Note `DexbotSharpaRobot.send_action` is a no-op (that class
+    only records); closed-loop rollout goes through
+    `dexbot-teleop/scripts/run_policy.py`, which publishes the action itself.
+    """
+
+    def get_obs_key(self) -> str:
+        return "observation.state"
+
+    def get_act_key(self) -> str:
+        return "action"
+
+    def transform_action(self, action: torch.Tensor, state: torch.Tensor, reference_eef: torch.Tensor | None = None) -> torch.Tensor:
+        return action
+
+    def get_eef_action(self, action: torch.Tensor, state: torch.Tensor, reference_eef: torch.Tensor | None = None) -> torch.Tensor:
+        return action
+
+    def compute_relative_actions(self, batch: dict) -> dict:
+        return batch

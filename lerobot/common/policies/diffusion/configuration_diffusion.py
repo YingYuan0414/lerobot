@@ -132,7 +132,9 @@ class DiffusionConfig(PreTrainedConfig):
     drop_n_last_frames: int = 7  # horizon - n_action_steps - n_obs_steps + 1
 
     # Architecture / modeling.
-    # Vision backbone.
+    # Vision backbone. Either a torchvision ResNet variant name ("resnet18") or
+    # "dinov2", which uses the frozen DINOv2 ViT + attention pooling encoder
+    # (see `dinov2_encoder.py`) following DexDirect (arXiv 2607.27784).
     vision_backbone: str = "resnet18"
     crop_shape: tuple[int, int] | None = None
     crop_is_random: bool = True
@@ -141,6 +143,23 @@ class DiffusionConfig(PreTrainedConfig):
     use_group_norm: bool = True
     spatial_softmax_num_keypoints: int = 32
     use_separate_rgb_encoder_per_camera: bool = True
+    # DINOv2 backbone options (only used when vision_backbone == "dinov2").
+    # Frames are resized to `dinov2_resize_shape` and then cropped to
+    # `crop_shape` (random while training, center at eval).
+    vision_backbone_path: str = "facebook/dinov2-small"
+    dinov2_resize_shape: tuple[int, int] = (240, 240)
+    dinov2_freeze_backbone: bool = True
+    dinov2_pool_num_heads: int = 8
+    dinov2_feature_dim: int = 128
+    # Optional fixed region of interest, as (top, left, height, width) in RAW
+    # camera pixels, cut out BEFORE the resize. Use it when the camera sees a lot
+    # of task-irrelevant room: cropping to the workspace first means the
+    # `dinov2_resize_shape` budget is spent on the workspace. None = whole frame.
+    dinov2_roi: tuple[int, int, int, int] | None = None
+    # Random +/- shift (raw pixels) applied to `dinov2_roi` at training time, so a
+    # fixed ROI does not make the policy brittle to small camera movements. Only
+    # active while training and when `crop_is_random`.
+    dinov2_roi_jitter: int = 0
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
@@ -218,9 +237,10 @@ class DiffusionConfig(PreTrainedConfig):
         super().__post_init__()
 
         """Input validation (not exhaustive)."""
-        if not self.vision_backbone.startswith("resnet"):
+        if not self.vision_backbone.startswith("resnet") and self.vision_backbone != "dinov2":
             raise ValueError(
-                f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
+                "`vision_backbone` must be one of the ResNet variants or 'dinov2'. "
+                f"Got {self.vision_backbone}."
             )
 
         supported_prediction_types = ["epsilon", "sample"]
@@ -263,12 +283,42 @@ class DiffusionConfig(PreTrainedConfig):
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
 
         if self.crop_shape is not None:
-            for key, image_ft in self.image_features.items():
-                if self.crop_shape[0] > image_ft.shape[1] or self.crop_shape[1] > image_ft.shape[2]:
+            if self.vision_backbone == "dinov2":
+                # The DINOv2 encoder resizes to `dinov2_resize_shape` before
+                # cropping, so the crop is bounded by that, not by the raw frame.
+                if (
+                    self.crop_shape[0] > self.dinov2_resize_shape[0]
+                    or self.crop_shape[1] > self.dinov2_resize_shape[1]
+                ):
                     raise ValueError(
-                        f"`crop_shape` should fit within the images shapes. Got {self.crop_shape} "
-                        f"for `crop_shape` and {image_ft.shape} for "
-                        f"`{key}`."
+                        f"`crop_shape` should fit within `dinov2_resize_shape`. Got "
+                        f"{self.crop_shape} for `crop_shape` and {self.dinov2_resize_shape} "
+                        f"for `dinov2_resize_shape`."
+                    )
+            else:
+                for key, image_ft in self.image_features.items():
+                    if self.crop_shape[0] > image_ft.shape[1] or self.crop_shape[1] > image_ft.shape[2]:
+                        raise ValueError(
+                            f"`crop_shape` should fit within the images shapes. Got {self.crop_shape} "
+                            f"for `crop_shape` and {image_ft.shape} for "
+                            f"`{key}`."
+                        )
+
+        if self.dinov2_roi is not None:
+            if self.vision_backbone != "dinov2":
+                raise ValueError("`dinov2_roi` only applies to `vision_backbone='dinov2'`.")
+            if len(self.dinov2_roi) != 4:
+                raise ValueError(
+                    f"`dinov2_roi` must be (top, left, height, width). Got {self.dinov2_roi}."
+                )
+            top, left, height, width = self.dinov2_roi
+            if top < 0 or left < 0 or height <= 0 or width <= 0:
+                raise ValueError(f"`dinov2_roi` must be non-negative and non-empty. Got {self.dinov2_roi}.")
+            for key, image_ft in self.image_features.items():
+                if top + height > image_ft.shape[1] or left + width > image_ft.shape[2]:
+                    raise ValueError(
+                        f"`dinov2_roi` {self.dinov2_roi} does not fit within the frame shape "
+                        f"{image_ft.shape} of `{key}`."
                     )
 
         # Check that all input images have the same shape.

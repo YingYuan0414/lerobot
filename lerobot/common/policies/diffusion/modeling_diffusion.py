@@ -45,15 +45,38 @@ from lerobot.common.policies.utils import (
     get_output_shape,
     populate_queues,
 )
-from lerobot.common.policies.high_level.high_level_wrapper import HighLevelWrapper, HighLevelConfig, \
-    get_siglip_text_embedding
-from lerobot.common.policies.high_level.mimicplay import (
-    initialize_mimicplay_model,
-    prepare_mimicplay_batch_inference,
-    prepare_mimicplay_batch_train,
-    visualize_mimicplay_rerun,
-    visualize_mimicplay_open3d,
-)
+try:
+    from lerobot.common.policies.high_level.high_level_wrapper import HighLevelWrapper, HighLevelConfig, \
+        get_siglip_text_embedding
+    from lerobot.common.policies.high_level.mimicplay import (
+        initialize_mimicplay_model,
+        prepare_mimicplay_batch_inference,
+        prepare_mimicplay_batch_train,
+        visualize_mimicplay_rerun,
+        visualize_mimicplay_open3d,
+    )
+except ImportError as _hl_import_error:
+    # The high-level (goal-conditioning / mimicplay) stack pulls in pytorch3d and
+    # open3d. Those are only needed when `enable_goal_conditioning`,
+    # `use_latent_plan` or `use_text_embedding` is set, so keep plain diffusion
+    # policies usable in envs without them and fail only on actual use.
+    def _make_high_level_stub(name):
+        def _stub(*args, **kwargs):
+            raise ImportError(
+                f"`{name}` requires the high-level dependencies (pytorch3d, open3d), "
+                f"which failed to import: {_hl_import_error}"
+            )
+
+        return _stub
+
+    HighLevelWrapper = _make_high_level_stub("HighLevelWrapper")
+    HighLevelConfig = _make_high_level_stub("HighLevelConfig")
+    get_siglip_text_embedding = _make_high_level_stub("get_siglip_text_embedding")
+    initialize_mimicplay_model = _make_high_level_stub("initialize_mimicplay_model")
+    prepare_mimicplay_batch_inference = _make_high_level_stub("prepare_mimicplay_batch_inference")
+    prepare_mimicplay_batch_train = _make_high_level_stub("prepare_mimicplay_batch_train")
+    visualize_mimicplay_rerun = _make_high_level_stub("visualize_mimicplay_rerun")
+    visualize_mimicplay_open3d = _make_high_level_stub("visualize_mimicplay_open3d")
 from transformers import AutoModel, AutoProcessor
 
 
@@ -332,12 +355,13 @@ class DiffusionModel(nn.Module):
         global_cond_dim = self.config.robot_state_feature[self.obs_key].shape[0]
         if self.config.image_features:
             num_images = len(self.config.image_features)
+            make_rgb_encoder = _get_rgb_encoder_class(config)
             if self.config.use_separate_rgb_encoder_per_camera:
-                encoders = [DiffusionRgbEncoder(config) for _ in range(num_images)]
+                encoders = [make_rgb_encoder(config) for _ in range(num_images)]
                 self.rgb_encoder = nn.ModuleList(encoders)
                 global_cond_dim += encoders[0].feature_dim * num_images
             else:
-                self.rgb_encoder = DiffusionRgbEncoder(config)
+                self.rgb_encoder = make_rgb_encoder(config)
                 global_cond_dim += self.rgb_encoder.feature_dim * num_images
         if self.config.env_state_feature:
             global_cond_dim += self.config.env_state_feature.shape[0]
@@ -408,6 +432,11 @@ class DiffusionModel(nn.Module):
             generator=generator,
         )
 
+        # Required before reading `.timesteps`: DDPM happens to be pre-populated
+        # from `num_train_timesteps` at construction, but DDIM leaves it None
+        # until this is called, and it is what applies `num_inference_steps`.
+        self.noise_scheduler.set_timesteps(self.num_inference_steps)
+
         for t in self.noise_scheduler.timesteps:
             # Predict model output.
             model_output = self.unet(
@@ -437,8 +466,10 @@ class DiffusionModel(nn.Module):
         img_features_list = [None] * len(image_key_list)
 
         for camera_name, image_infos in camera_groups.items():
-            # Compute crop params once per camera for synchronized cropping
-            if self.config.crop_shape is not None:
+            # Compute crop params once per camera for synchronized cropping.
+            # An ROI jitter also needs to be shared, so that the observation steps
+            # of one sample all see the same viewpoint.
+            if self.config.crop_shape is not None or self.config.dinov2_roi is not None:
                 sample_key = image_infos[0]['key']
                 img_shape = batch[sample_key].shape[2:]  # (C, H, W)
                 ref_encoder = self.rgb_encoder[0] if self.config.use_separate_rgb_encoder_per_camera else self.rgb_encoder
@@ -684,6 +715,15 @@ class SpatialSoftmax(nn.Module):
         feature_keypoints = expected_xy.view(-1, self._out_c, 2)
 
         return feature_keypoints
+
+
+def _get_rgb_encoder_class(config: DiffusionConfig):
+    """Pick the RGB encoder implementation named by `config.vision_backbone`."""
+    if config.vision_backbone == "dinov2":
+        from lerobot.common.policies.diffusion.dinov2_encoder import DiffusionDinoV2RgbEncoder
+
+        return DiffusionDinoV2RgbEncoder
+    return DiffusionRgbEncoder
 
 
 class DiffusionRgbEncoder(nn.Module):

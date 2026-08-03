@@ -188,5 +188,16 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
             obs_key = "observation.state"
             act_key = "action"
             return LiberoFrankaAdapter(obs_key, act_key)
+        elif self.robot_type == "dexbot_sharpa":
+            # Sharpa hand + TJ-Marvin arm: `action` is already the absolute
+            # 29-D joint target (arm_q(7) + hand(22)) the robot consumes, so
+            # the adapter is a pass-through.
+            from lerobot.common.policies.robot_adapters import DexbotSharpaAdapter
+            if self.action_space != "joint":
+                raise ValueError(
+                    "robot_type='dexbot_sharpa' only supports action_space='joint' "
+                    f"(absolute 29-D joint targets). Got {self.action_space!r}."
+                )
+            return DexbotSharpaAdapter()
         else:
             raise ValueError(f"Unknown robot_type: {self.robot_type}")
