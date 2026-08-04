@@ -171,6 +171,7 @@ def train(cfg: TrainPipelineConfig):
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.episode_data_index,
+            drop_n_first_frames=getattr(cfg.policy, "drop_n_first_frames", 0),
             drop_n_last_frames=cfg.policy.drop_n_last_frames,
             shuffle=True,
         )

@@ -101,6 +101,13 @@ def repeat_goal_first_channel_as_rgb(batch, goal_key_name):
         raise ValueError("unexpected tensor shape")
     return batch
 
+
+# Sentinel written into the state vector when `state_dropout_prob` fires. Must
+# lie outside the normalized state range ([-1, 1] under MIN_MAX) so "state
+# withheld" is distinguishable from any real joint configuration.
+_STATE_DROPOUT_FILL = -2.0
+
+
 class DiffusionPolicy(PreTrainedPolicy):
     """
     Diffusion Policy as per "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion"
@@ -522,7 +529,28 @@ class DiffusionModel(nn.Module):
     def _prepare_global_conditioning(self, batch: dict[str, Tensor]) -> Tensor:
         """Encode image features and concatenate them all together along with the state vector."""
         batch_size, n_obs_steps = batch[self.obs_key].shape[:2]
-        global_cond_feats = [batch[self.obs_key]]
+        state_feats = batch[self.obs_key]
+
+        # State dropout: withhold proprioception from a random subset of samples
+        # so the loss cannot be driven down by reading state alone. The mask is
+        # per-sample and shared across the n_obs_steps of that sample -- masking
+        # individual timesteps would leave the others to fill the gap, and
+        # masking per-batch would make whole steps state-free rather than
+        # teaching the model to cope with either case.
+        #
+        # The fill value must sit OUTSIDE the normalized range. MIN_MAX maps
+        # state to [-1, 1], so zeroing would read as "joints at mid-range" -- a
+        # valid pose the model would learn to trust. -2 is unambiguously absent.
+        if self.training and self.config.state_dropout_prob > 0.0:
+            drop = (
+                torch.rand(batch_size, 1, 1, device=state_feats.device)
+                < self.config.state_dropout_prob
+            )
+            state_feats = torch.where(
+                drop, torch.full_like(state_feats, _STATE_DROPOUT_FILL), state_feats
+            )
+
+        global_cond_feats = [state_feats]
 
         if self.config.image_features:
             if self.training:

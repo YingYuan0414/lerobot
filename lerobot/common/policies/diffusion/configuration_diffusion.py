@@ -131,6 +131,22 @@ class DiffusionConfig(PreTrainedConfig):
     # which avoids excessive padding and leads to improved training results.
     drop_n_last_frames: int = 7  # horizon - n_action_steps - n_obs_steps + 1
 
+    # Frames to drop from the START of each episode. Teleop recordings usually
+    # open with the operator settling before motion begins; those frames teach
+    # "hold the home pose", which shows up at rollout as a policy that never
+    # leaves home. Measure the real prefix per dataset before setting this
+    # (scripts/measure_idle_prefix.py) -- it is dataset-specific.
+    drop_n_first_frames: int = 0
+
+    # Probability of zeroing the whole proprioceptive state vector during
+    # training (per sample, per batch). On this hardware a linear map from
+    # state alone predicts the action chunk with R^2~0.95, so the policy can
+    # reach low loss while ignoring the camera entirely -- at rollout it then
+    # replays an average trajectory instead of reacting to the object. Randomly
+    # withholding state forces the visual pathway to carry the task signal.
+    # Applies at train time only; inference always sees the true state.
+    state_dropout_prob: float = 0.0
+
     # Architecture / modeling.
     # Vision backbone. Either a torchvision ResNet variant name ("resnet18") or
     # "dinov2", which uses the frozen DINOv2 ViT + attention pooling encoder
