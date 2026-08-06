@@ -66,6 +66,12 @@ def subsample_dataset(source_repo_id: str, target_repo_id: str, target_fps: int 
                 frame_data["observation.images.cam_wrist"] = (
                     frame_data["observation.images.cam_wrist"].permute(1,2,0) * 255
                 ).to(torch.uint8)
+            # Handle zed camera if present. The dataset yields it as a float CHW
+            # tensor in [0,1]; add_frame's validator wants uint8 HWC.
+            if "observation.images.zed" in frame_data:
+                frame_data["observation.images.zed"] = (
+                    frame_data["observation.images.zed"].permute(1,2,0) * 255
+                ).to(torch.uint8)
             subsampled_dataset.add_frame(frame_data)
 
         subsampled_dataset.save_episode()
