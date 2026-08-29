@@ -147,6 +147,28 @@ class DiffusionConfig(PreTrainedConfig):
     # Applies at train time only; inference always sees the true state.
     state_dropout_prob: float = 0.0
 
+    # dexbot_sharpa only. Append the hand's real force-sensor torque channels
+    # to observation.state as extra proprioceptive input, so the policy can
+    # react to contact (e.g. "keep closing until resistance") instead of only
+    # replaying a fixed closure amount. `observation.hand_torque` has 22
+    # channels, but only `hand_torque_sensed_indices` are true finger-root
+    # force-sensor readings (see dexbot-teleop's
+    # sharpa_kinematics.FINGER_SENSED_JOINT); the remaining 17 are
+    # current-estimated and noisy (can drop to exact zero), so they are
+    # deliberately excluded rather than feeding all 22.
+    use_hand_torque_obs: bool = False
+    hand_torque_sensed_indices: tuple[int, ...] = (0, 5, 9, 13, 18)
+
+    # dexbot_sharpa only. Train on `action.applied` (the online compliance
+    # controller's corrected joint target -- teleop target + compliance_dq)
+    # instead of the default `action` (== `action.teleop`, the raw human
+    # target). The two are identical on the arm; they differ only on the 22
+    # hand joints, where `action.applied` already encodes the runtime
+    # yield/backoff correction. Use this together with `use_hand_torque_obs`
+    # to give the policy the same contact signal the compliance controller
+    # used to produce that correction.
+    use_applied_action: bool = False
+
     # Architecture / modeling.
     # Vision backbone. Either a torchvision ResNet variant name ("resnet18") or
     # "dinov2", which uses the frozen DINOv2 ViT + attention pooling encoder
@@ -297,6 +319,30 @@ class DiffusionConfig(PreTrainedConfig):
     def validate_features(self) -> None:
         if len(self.image_features) == 0 and self.env_state_feature is None:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
+
+        if self.use_hand_torque_obs:
+            if self.robot_type != "dexbot_sharpa":
+                raise ValueError(
+                    "`use_hand_torque_obs` assumes the dexbot_sharpa 22-channel hand_torque "
+                    f"layout. Got robot_type={self.robot_type!r}."
+                )
+            if "observation.hand_torque" not in self.input_features:
+                raise ValueError(
+                    "`use_hand_torque_obs=True` but 'observation.hand_torque' is not in the "
+                    "dataset's features."
+                )
+
+        if self.use_applied_action:
+            if self.robot_type != "dexbot_sharpa":
+                raise ValueError(
+                    "`use_applied_action` assumes the dexbot_sharpa action layout. "
+                    f"Got robot_type={self.robot_type!r}."
+                )
+            if "action.applied" not in self.output_features:
+                raise ValueError(
+                    "`use_applied_action=True` but 'action.applied' is not in the dataset's "
+                    "features."
+                )
 
         if self.crop_shape is not None:
             if self.vision_backbone == "dinov2":

@@ -198,6 +198,7 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
                     "robot_type='dexbot_sharpa' only supports action_space='joint' "
                     f"(absolute 29-D joint targets). Got {self.action_space!r}."
                 )
-            return DexbotSharpaAdapter()
+            act_key = "action.applied" if getattr(self, "use_applied_action", False) else "action"
+            return DexbotSharpaAdapter(act_key=act_key)
         else:
             raise ValueError(f"Unknown robot_type: {self.robot_type}")

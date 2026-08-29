@@ -217,6 +217,8 @@ class DiffusionPolicy(PreTrainedPolicy):
             self.obs_key: deque(maxlen=self.config.n_obs_steps),
             self.act_key: deque(maxlen=self.config.n_action_steps),
         }
+        if self.config.use_hand_torque_obs:
+            self._queues["observation.hand_torque"] = deque(maxlen=self.config.n_obs_steps)
         if self.config.image_features:
             self._queues["observation.images"] = deque(maxlen=self.config.n_obs_steps)
         if self.config.env_state_feature:
@@ -360,6 +362,8 @@ class DiffusionModel(nn.Module):
 
         # Build observation encoders (depending on which observations are provided).
         global_cond_dim = self.config.robot_state_feature[self.obs_key].shape[0]
+        if self.config.use_hand_torque_obs:
+            global_cond_dim += len(self.config.hand_torque_sensed_indices)
         if self.config.image_features:
             num_images = len(self.config.image_features)
             make_rgb_encoder = _get_rgb_encoder_class(config)
@@ -530,6 +534,14 @@ class DiffusionModel(nn.Module):
         """Encode image features and concatenate them all together along with the state vector."""
         batch_size, n_obs_steps = batch[self.obs_key].shape[:2]
         state_feats = batch[self.obs_key]
+
+        if self.config.use_hand_torque_obs:
+            # batch["observation.hand_torque"] was already normalized by
+            # normalize_inputs (it's tagged FeatureType.STATE like every
+            # other "observation.*" key), so this is just a column select.
+            idx = list(self.config.hand_torque_sensed_indices)
+            torque_feats = batch["observation.hand_torque"][..., idx]
+            state_feats = torch.cat([state_feats, torque_feats], dim=-1)
 
         # State dropout: withhold proprioception from a random subset of samples
         # so the loss cannot be driven down by reading state alone. The mask is

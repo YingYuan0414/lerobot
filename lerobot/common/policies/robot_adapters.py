@@ -329,13 +329,24 @@ class DexbotSharpaAdapter(RobotAdapter):
     a pass-through. Note `DexbotSharpaRobot.send_action` is a no-op (that class
     only records); closed-loop rollout goes through
     `dexbot-teleop/scripts/run_policy.py`, which publishes the action itself.
+
+    Args:
+        act_key: which recorded action column to train on. Default `"action"`
+            (== `action.teleop`, the raw human-commanded target). Pass
+            `"action.applied"` to instead train on the post-compliance
+            target actually sent to the robot (arm identical, hand joints
+            include the online yield/backoff correction) -- see
+            `DiffusionConfig.use_applied_action`.
     """
+
+    def __init__(self, act_key: str = "action"):
+        self.act_key = act_key
 
     def get_obs_key(self) -> str:
         return "observation.state"
 
     def get_act_key(self) -> str:
-        return "action"
+        return self.act_key
 
     def transform_action(self, action: torch.Tensor, state: torch.Tensor, reference_eef: torch.Tensor | None = None) -> torch.Tensor:
         return action
